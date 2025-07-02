@@ -82,6 +82,35 @@
             transform: none;
         }
         
+        .button-group {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 15px;
+        }
+        
+        .stop-btn {
+            background: linear-gradient(45deg, #e74c3c, #c0392b);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .stop-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(231, 76, 60, 0.3);
+        }
+        
+        .stop-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
         .results-section {
             margin-top: 40px;
         }
@@ -420,7 +449,10 @@
                 placeholder="Enter your question here..."
                 rows="4"
             ></textarea>
-            <button id="submitBtn" class="submit-btn">Ask All Models</button>
+            <div class="button-group">
+                <button id="submitBtn" class="submit-btn">Ask All Models</button>
+                <button id="stopBtn" class="stop-btn hidden">Stop Processing</button>
+            </div>
         </div>
         
         <div class="loading-indicator" id="loadingIndicator">
@@ -456,6 +488,7 @@
                 this.models = [];
                 this.availableModels = [];
                 this.intentionalClose = false;
+                this.isProcessing = false;
                 this.initializeElements();
                 this.setupEventListeners();
                 this.loadAvailableModels();
@@ -464,6 +497,7 @@
             initializeElements() {
                 this.questionInput = document.getElementById('questionInput');
                 this.submitBtn = document.getElementById('submitBtn');
+                this.stopBtn = document.getElementById('stopBtn');
                 this.refreshBtn = document.getElementById('refreshBtn');
                 this.modelCount = document.getElementById('modelCount');
                 this.processingMode = document.getElementById('processingMode');
@@ -481,6 +515,7 @@
             
             setupEventListeners() {
                 this.submitBtn.addEventListener('click', () => this.submitQuestion());
+                this.stopBtn.addEventListener('click', () => this.stopProcessing());
                 this.refreshBtn.addEventListener('click', () => this.refreshModels());
                 this.questionInput.addEventListener('keypress', (e) => {
                     if (e.key === 'Enter' && e.ctrlKey) {
@@ -573,7 +608,9 @@
                 }
                 
                 this.resetState();
+                this.isProcessing = true;
                 this.submitBtn.disabled = true;
+                this.stopBtn.classList.remove('hidden');
                 this.loadingIndicator.classList.add('active');
                 
                 try {
@@ -587,8 +624,7 @@
                 } catch (error) {
                     console.error('Error:', error);
                     this.showError('Failed to connect to server');
-                    this.submitBtn.disabled = false;
-                    this.loadingIndicator.classList.remove('active');
+                    this.resetProcessingState();
                 }
             }
             
@@ -745,7 +781,10 @@
             }
             
             async handleAllCompleted() {
-                this.submitBtn.disabled = false;
+                // Only proceed if we're still processing (not stopped)
+                if (!this.isProcessing) {
+                    return;
+                }
                 
                 // Update batch status to show completion
                 this.showBatchStatus('✅ All batches completed successfully! Generating summaries...');
@@ -757,6 +796,8 @@
                 
                 // Final status update
                 this.showBatchStatus('🎉 Processing complete! All summaries generated.');
+                
+                this.resetProcessingState();
                 
                 // Auto-hide the status after 5 seconds
                 setTimeout(() => {
@@ -773,6 +814,51 @@
                 
                 // Don't close the websocket - keep it open for future questions
                 console.log('All models completed - ready for next question');
+            }
+            
+            resetProcessingState() {
+                this.isProcessing = false;
+                this.submitBtn.disabled = false;
+                this.stopBtn.classList.add('hidden');
+                this.loadingIndicator.classList.remove('active');
+            }
+            
+            stopProcessing() {
+                if (!this.isProcessing) {
+                    return;
+                }
+                
+                this.isProcessing = false;
+                
+                // Show stopped status
+                this.showBatchStatus('🛑 Processing stopped by user');
+                
+                // Close WebSocket to stop all processing
+                if (this.websocket) {
+                    this.intentionalClose = true;
+                    this.websocket.close();
+                    this.websocket = null;
+                }
+                
+                // Mark any pending models as stopped
+                const allCards = document.querySelectorAll('.model-card');
+                allCards.forEach(card => {
+                    const statusElement = card.querySelector('.model-status');
+                    if (statusElement && statusElement.textContent === 'Streaming...') {
+                        statusElement.textContent = 'Stopped';
+                        statusElement.className = 'model-status status-error';
+                        card.className = 'model-card error';
+                        
+                        const responseElement = card.querySelector('.model-response');
+                        if (responseElement) {
+                            responseElement.textContent += '\n\n[Stopped by user]';
+                        }
+                    }
+                });
+                
+                this.resetProcessingState();
+                
+                console.log('Processing stopped by user');
             }
             
             generateSummary() {
