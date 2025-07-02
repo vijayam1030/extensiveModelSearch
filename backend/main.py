@@ -84,6 +84,29 @@ class ModelConfig:
 
 model_config = ModelConfig()
 
+def create_enhanced_prompt(question: str, response_length: str, custom_length: str = "10") -> str:
+    """Create an enhanced prompt with specific length instructions"""
+    
+    length_instructions = {
+        "brief": "Please provide a brief response in 1-2 sentences only.",
+        "short": "Please provide a short response in 3-5 sentences.",
+        "medium": "Please provide a medium-length response in 1-2 paragraphs.",
+        "long": "Please provide a detailed response in 3-4 paragraphs.",
+        "detailed": "Please provide a comprehensive and detailed response in 5 or more paragraphs.",
+        "custom": f"Please provide a response that is approximately {custom_length} lines long."
+    }
+    
+    instruction = length_instructions.get(response_length, length_instructions["medium"])
+    
+    # Create the enhanced prompt
+    enhanced_prompt = f"""{instruction}
+
+Question: {question}
+
+Please answer the question above following the length requirement specified."""
+    
+    return enhanced_prompt
+
 @app.get("/api/models")
 async def get_models():
     """Get list of available models"""
@@ -117,8 +140,21 @@ async def refresh_models():
         "models": list(model_config.models.keys())
     }
 
-async def stream_ollama_response(model_name: str, question: str, websocket: WebSocket, display_name: str = None):
+async def stream_ollama_response(model_name: str, question: str, websocket: WebSocket, display_name: str = None, response_length: str = "medium"):
     display_name = display_name or model_name.split(':')[0]  # Use clean name for display
+    
+    # Set appropriate token limits based on response length
+    token_limits = {
+        "brief": 100,
+        "short": 200,
+        "medium": 500,
+        "long": 800,
+        "detailed": 1200,
+        "custom": 600  # Default for custom, can be adjusted
+    }
+    
+    num_predict = token_limits.get(response_length, 500)
+    
     try:
         await websocket.send_text(json.dumps({
             "model": display_name,
@@ -137,7 +173,8 @@ async def stream_ollama_response(model_name: str, question: str, websocket: WebS
                     "options": {
                         "temperature": 0.7,
                         "top_p": 0.9,
-                        "num_predict": 500  # Limit response length
+                        "num_predict": num_predict,
+                        "stop": ["\n\n\n", "Question:", "---"]  # Stop at excessive whitespace or new questions
                     }
                 },
                 timeout=120.0
@@ -206,12 +243,12 @@ async def stream_ollama_response(model_name: str, question: str, websocket: WebS
         }))
         return f"Error: {error_msg}"
 
-async def run_model_with_timeout(model_name: str, question: str, websocket: WebSocket, display_name: str = None, timeout: int = 180):
+async def run_model_with_timeout(model_name: str, question: str, websocket: WebSocket, display_name: str = None, response_length: str = "medium", timeout: int = 180):
     """Run a single model with individual timeout"""
     display_name = display_name or model_name.split(':')[0]
     try:
         return await asyncio.wait_for(
-            stream_ollama_response(model_name, question, websocket, display_name),
+            stream_ollama_response(model_name, question, websocket, display_name, response_length),
             timeout=timeout
         )
     except asyncio.TimeoutError:
@@ -239,6 +276,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 request_data = json.loads(data)
                 question = request_data.get("question", "").strip()
                 processing_mode = request_data.get("mode", "batch")  # batch, parallel, sequential
+                response_length = request_data.get("responseLength", "medium")
+                custom_length = request_data.get("customLength", "10")
                 
                 if not question:
                     await websocket.send_text(json.dumps({
@@ -247,7 +286,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
                     continue
                 
-                print(f"Processing question: {question} (mode: {processing_mode})")
+                # Create enhanced prompt with length instructions
+                enhanced_question = create_enhanced_prompt(question, response_length, custom_length)
+                print(f"Processing question: {question} (mode: {processing_mode}, length: {response_length})")
                 
                 # Get all available models
                 all_models = list(model_config.models.items())
@@ -290,8 +331,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         }))
                         
                         result = await run_model_with_timeout(
-                            config["model_name"], question, websocket, 
-                            display_name=model_name, timeout=120
+                            config["model_name"], enhanced_question, websocket, 
+                            display_name=model_name, response_length=response_length, timeout=120
                         )
                         
                         if not isinstance(result, Exception) and not str(result).startswith("Error:"):
@@ -322,7 +363,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         for model_name, config in batch:
                             print(f"Starting task for model: {config['model_name']} (display: {model_name})")
                             task = asyncio.create_task(
-                                run_model_with_timeout(config["model_name"], question, websocket, display_name=model_name, timeout=120)
+                                run_model_with_timeout(config["model_name"], enhanced_question, websocket, display_name=model_name, response_length=response_length, timeout=120)
                             )
                             tasks.append(task)
                         
@@ -344,7 +385,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     for model_name, config in available_models:
                         print(f"Starting task for model: {config['model_name']} (display: {model_name})")
                         task = asyncio.create_task(
-                            run_model_with_timeout(config["model_name"], question, websocket, display_name=model_name, timeout=120)
+                            run_model_with_timeout(config["model_name"], enhanced_question, websocket, display_name=model_name, response_length=response_length, timeout=120)
                         )
                         tasks.append(task)
                     
