@@ -47,4 +47,30 @@ export interface Summary {
   completedModels: number;
   analysis: string;
   recommendations: string[];
+  detailedReport: {
+    executionTime: number;
+    averageResponseLength: number;
+    modelPerformanceRanking: ModelPerformance[];
+    topInsights: string[];
+    comparisonMatrix: ModelComparison[];
+  };
+}
+
+export interface ModelPerformance {
+  modelName: string;
+  score: number;
+  wordCount: number;
+  responseTime: number;
+  qualityMetrics: {
+    completeness: number;
+    relevance: number;
+    clarity: number;
+  };
+}
+
+export interface ModelComparison {
+  modelName: string;
+  strengths: string[];
+  weaknesses: string[];
+  bestUseCase: string;
 }
