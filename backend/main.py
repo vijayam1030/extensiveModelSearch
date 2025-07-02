@@ -140,6 +140,79 @@ async def refresh_models():
         "models": list(model_config.models.keys())
     }
 
+@app.post("/api/meta-summary")
+async def generate_meta_summary(request: dict):
+    """Generate a comprehensive summary using the best model"""
+    from fastapi.responses import StreamingResponse
+    
+    try:
+        model_name = request.get("model")
+        prompt = request.get("prompt")
+        
+        if not model_name or not prompt:
+            return {"error": "Missing model or prompt"}
+        
+        # Find the full model name
+        model_config_entry = None
+        for config in model_config.models.values():
+            if config["display_name"] == model_name:
+                model_config_entry = config
+                break
+        
+        if not model_config_entry:
+            return {"error": f"Model {model_name} not found"}
+        
+        full_model_name = model_config_entry["model_name"]
+        
+        async def generate_stream():
+            try:
+                async with httpx.AsyncClient(timeout=180.0) as client:
+                    response = await client.post(
+                        "http://localhost:11434/api/generate",
+                        json={
+                            "model": full_model_name,
+                            "prompt": prompt,
+                            "stream": True,
+                            "options": {
+                                "temperature": 0.3,  # Lower temperature for more focused analysis
+                                "top_p": 0.9,
+                                "num_predict": 1500,  # Longer for comprehensive analysis
+                            }
+                        },
+                        timeout=180.0
+                    )
+                    
+                    if response.status_code != 200:
+                        yield f"data: {json.dumps({'error': f'API returned {response.status_code}'})}\n\n"
+                        return
+                    
+                    async for line in response.aiter_lines():
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                if "response" in data and data["response"]:
+                                    yield f"data: {json.dumps({'content': data['response']})}\n\n"
+                                if data.get("done", False):
+                                    yield f"data: {json.dumps({'done': True})}\n\n"
+                                    break
+                            except json.JSONDecodeError:
+                                continue
+                                
+            except Exception as e:
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        return StreamingResponse(
+            generate_stream(),
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+        
+    except Exception as e:
+        return {"error": str(e)}
+
 async def stream_ollama_response(model_name: str, question: str, websocket: WebSocket, display_name: str = None, response_length: str = "medium"):
     display_name = display_name or model_name.split(':')[0]  # Use clean name for display
     
