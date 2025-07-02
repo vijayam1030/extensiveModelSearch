@@ -403,6 +403,60 @@
             color: #1b5e20;
             font-weight: 600;
         }
+        
+        .ready-state {
+            text-align: center;
+            padding: 60px 40px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 15px;
+            margin: 20px 0;
+            grid-column: 1 / -1;
+        }
+        
+        .ready-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+        }
+        
+        .ready-state h3 {
+            font-size: 2em;
+            color: #2c3e50;
+            margin-bottom: 15px;
+            font-weight: 300;
+        }
+        
+        .ready-state p {
+            font-size: 1.1em;
+            color: #7f8c8d;
+            margin-bottom: 30px;
+            line-height: 1.6;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .ready-features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .feature {
+            background: rgba(255, 255, 255, 0.8);
+            padding: 15px 20px;
+            border-radius: 10px;
+            font-size: 0.95em;
+            color: #34495e;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -489,6 +543,7 @@
                 this.availableModels = [];
                 this.intentionalClose = false;
                 this.isProcessing = false;
+                this.currentSessionId = null;
                 this.initializeElements();
                 this.setupEventListeners();
                 this.loadAvailableModels();
@@ -573,10 +628,35 @@
             
             initializeModelCards() {
                 this.modelsGrid.innerHTML = '';
-                this.models.forEach(model => {
-                    const card = this.createModelCard(model);
-                    this.modelsGrid.appendChild(card);
-                });
+                // Don't create cards until processing starts
+                this.showReadyState();
+            }
+            
+            showReadyState() {
+                // Only show ready state if the grid is empty or contains ready state
+                const currentContent = this.modelsGrid.innerHTML.trim();
+                if (currentContent === '' || currentContent.includes('ready-state')) {
+                    this.modelsGrid.innerHTML = `
+                        <div class="ready-state">
+                            <div class="ready-icon">🤖</div>
+                            <h3>Ready to Compare AI Models</h3>
+                            <p>Enter your question above and select your preferences, then click "Ask All Models" to see responses from ${this.models.length} different AI models.</p>
+                            <div class="ready-features">
+                                <div class="feature">📊 Real-time streaming responses</div>
+                                <div class="feature">⚡ Multiple processing modes</div>
+                                <div class="feature">📝 Customizable response lengths</div>
+                                <div class="feature">🎯 Comprehensive analysis</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+            
+            clearReadyState() {
+                const readyState = document.querySelector('.ready-state');
+                if (readyState) {
+                    readyState.remove();
+                }
             }
             
             createModelCard(modelName) {
@@ -632,17 +712,15 @@
                 this.responses = {};
                 this.summarySection.classList.add('hidden');
                 this.metaSummarySection.classList.add('hidden');
-                this.models.forEach(model => {
-                    const responseEl = document.getElementById(`response-${model}`);
-                    const statusEl = document.getElementById(`status-${model}`);
-                    const cardEl = document.getElementById(`model-${model}`);
-                    if (responseEl) responseEl.textContent = 'Waiting for response...';
-                    if (statusEl) {
-                        statusEl.textContent = 'Pending';
-                        statusEl.className = 'model-status status-pending';
-                    }
-                    if (cardEl) cardEl.className = 'model-card';
-                });
+                
+                // Clear the models grid and prepare for new cards
+                this.modelsGrid.innerHTML = '';
+                
+                // Remove any existing batch status
+                const existingStatus = document.querySelector('.batch-status');
+                if (existingStatus) {
+                    existingStatus.remove();
+                }
             }
             
             async connectWebSocket() {
@@ -692,6 +770,9 @@
             
             sendQuestion(question) {
                 if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+                    // Generate unique session ID for this question
+                    this.currentSessionId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+                    
                     const mode = this.processingMode.value;
                     const lengthSetting = this.responseLength.value;
                     const customLength = this.customLength.value;
@@ -700,13 +781,20 @@
                         question: question,
                         mode: mode,
                         responseLength: lengthSetting,
-                        customLength: customLength
+                        customLength: customLength,
+                        sessionId: this.currentSessionId
                     }));
                 }
             }
             
             handleWebSocketMessage(event) {
                 const data = JSON.parse(event.data);
+                
+                // Ignore messages from previous sessions
+                if (data.sessionId && data.sessionId !== this.currentSessionId) {
+                    console.log('Ignoring message from previous session:', data.sessionId);
+                    return;
+                }
                 
                 if (data.status === 'all_completed') {
                     this.handleAllCompleted();
@@ -715,6 +803,8 @@
                 
                 if (data.status === 'starting') {
                     console.log(data.message);
+                    // Clear ready state when processing starts
+                    this.clearReadyState();
                     this.showBatchStatus(data.message);
                     return;
                 }
@@ -830,6 +920,9 @@
                 
                 this.isProcessing = false;
                 
+                // Invalidate current session to ignore any remaining responses
+                this.currentSessionId = null;
+                
                 // Show stopped status
                 this.showBatchStatus('🛑 Processing stopped by user');
                 
@@ -844,19 +937,34 @@
                 const allCards = document.querySelectorAll('.model-card');
                 allCards.forEach(card => {
                     const statusElement = card.querySelector('.model-status');
-                    if (statusElement && statusElement.textContent === 'Streaming...') {
+                    if (statusElement && (statusElement.textContent === 'Streaming...' || statusElement.textContent === 'Pending')) {
                         statusElement.textContent = 'Stopped';
                         statusElement.className = 'model-status status-error';
                         card.className = 'model-card error';
                         
                         const responseElement = card.querySelector('.model-response');
                         if (responseElement) {
-                            responseElement.textContent += '\n\n[Stopped by user]';
+                            if (responseElement.textContent === 'Waiting for response...') {
+                                responseElement.textContent = '[Stopped by user]';
+                            } else {
+                                responseElement.textContent += '\n\n[Stopped by user]';
+                            }
                         }
                     }
                 });
                 
                 this.resetProcessingState();
+                
+                // Auto-hide stop status and return to ready state after a delay
+                setTimeout(() => {
+                    // Clear everything and show ready state
+                    this.modelsGrid.innerHTML = '';
+                    this.showReadyState();
+                    const statusElement = document.querySelector('.batch-status');
+                    if (statusElement) {
+                        statusElement.remove();
+                    }
+                }, 3000);
                 
                 console.log('Processing stopped by user');
             }

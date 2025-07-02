@@ -213,7 +213,7 @@ async def generate_meta_summary(request: dict):
     except Exception as e:
         return {"error": str(e)}
 
-async def stream_ollama_response(model_name: str, question: str, websocket: WebSocket, display_name: str = None, response_length: str = "medium"):
+async def stream_ollama_response(model_name: str, question: str, websocket: WebSocket, display_name: str = None, response_length: str = "medium", session_id: str = ""):
     display_name = display_name or model_name.split(':')[0]  # Use clean name for display
     
     # Set appropriate token limits based on response length
@@ -232,7 +232,8 @@ async def stream_ollama_response(model_name: str, question: str, websocket: WebS
         await websocket.send_text(json.dumps({
             "model": display_name,
             "status": "streaming",
-            "content": ""
+            "content": "",
+            "sessionId": session_id
         }))
         
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -275,7 +276,8 @@ async def stream_ollama_response(model_name: str, question: str, websocket: WebS
                                     "model": display_name,
                                     "status": "streaming",
                                     "content": content,
-                                    "full_response": full_response
+                                    "full_response": full_response,
+                                    "sessionId": session_id
                                 }))
                         
                         if data.get("done", False):
@@ -294,7 +296,8 @@ async def stream_ollama_response(model_name: str, question: str, websocket: WebS
                 "model": display_name,
                 "status": "completed",
                 "content": "",
-                "full_response": full_response if full_response else "No response received"
+                "full_response": full_response if full_response else "No response received",
+                "sessionId": session_id
             }))
             
             return full_response
@@ -304,7 +307,8 @@ async def stream_ollama_response(model_name: str, question: str, websocket: WebS
         await websocket.send_text(json.dumps({
             "model": display_name,
             "status": "error",
-            "error": error_msg
+            "error": error_msg,
+            "sessionId": session_id
         }))
         return f"Error: {error_msg}"
     except Exception as e:
@@ -312,16 +316,17 @@ async def stream_ollama_response(model_name: str, question: str, websocket: WebS
         await websocket.send_text(json.dumps({
             "model": display_name,
             "status": "error",
-            "error": error_msg
+            "error": error_msg,
+            "sessionId": session_id
         }))
         return f"Error: {error_msg}"
 
-async def run_model_with_timeout(model_name: str, question: str, websocket: WebSocket, display_name: str = None, response_length: str = "medium", timeout: int = 180):
+async def run_model_with_timeout(model_name: str, question: str, websocket: WebSocket, display_name: str = None, response_length: str = "medium", session_id: str = "", timeout: int = 180):
     """Run a single model with individual timeout"""
     display_name = display_name or model_name.split(':')[0]
     try:
         return await asyncio.wait_for(
-            stream_ollama_response(model_name, question, websocket, display_name, response_length),
+            stream_ollama_response(model_name, question, websocket, display_name, response_length, session_id),
             timeout=timeout
         )
     except asyncio.TimeoutError:
@@ -329,7 +334,8 @@ async def run_model_with_timeout(model_name: str, question: str, websocket: WebS
         await websocket.send_text(json.dumps({
             "model": display_name,
             "status": "error",
-            "error": error_msg
+            "error": error_msg,
+            "sessionId": session_id
         }))
         return f"Error: {error_msg}"
 
@@ -351,11 +357,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 processing_mode = request_data.get("mode", "batch")  # batch, parallel, sequential
                 response_length = request_data.get("responseLength", "medium")
                 custom_length = request_data.get("customLength", "10")
+                session_id = request_data.get("sessionId", "")
                 
                 if not question:
                     await websocket.send_text(json.dumps({
                         "status": "error",
-                        "message": "No question provided"
+                        "message": "No question provided",
+                        "sessionId": session_id
                     }))
                     continue
                 
@@ -391,7 +399,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Send initial status
                 await websocket.send_text(json.dumps({
                     "status": "starting",
-                    "message": f"Starting processing with {len(available_models)} models in {processing_mode} mode"
+                    "message": f"Starting processing with {len(available_models)} models in {processing_mode} mode",
+                    "sessionId": session_id
                 }))
                 
                 if processing_mode == "sequential":
@@ -405,7 +414,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                         result = await run_model_with_timeout(
                             config["model_name"], enhanced_question, websocket, 
-                            display_name=model_name, response_length=response_length, timeout=120
+                            display_name=model_name, response_length=response_length, session_id=session_id, timeout=120
                         )
                         
                         if not isinstance(result, Exception) and not str(result).startswith("Error:"):
@@ -413,7 +422,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     await websocket.send_text(json.dumps({
                         "status": "all_completed",
-                        "message": f"Sequential processing complete. {completed_count}/{len(available_models)} models responded successfully."
+                        "message": f"Sequential processing complete. {completed_count}/{len(available_models)} models responded successfully.",
+                        "sessionId": session_id
                     }))
                 
                 elif processing_mode == "batch":
@@ -436,7 +446,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         for model_name, config in batch:
                             print(f"Starting task for model: {config['model_name']} (display: {model_name})")
                             task = asyncio.create_task(
-                                run_model_with_timeout(config["model_name"], enhanced_question, websocket, display_name=model_name, response_length=response_length, timeout=120)
+                                run_model_with_timeout(config["model_name"], enhanced_question, websocket, display_name=model_name, response_length=response_length, session_id=session_id, timeout=120)
                             )
                             tasks.append(task)
                         
@@ -449,7 +459,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     await websocket.send_text(json.dumps({
                         "status": "all_completed",
-                        "message": f"Batch processing complete. {total_completed}/{len(available_models)} models responded successfully."
+                        "message": f"Batch processing complete. {total_completed}/{len(available_models)} models responded successfully.",
+                        "sessionId": session_id
                     }))
                 
                 else:  # parallel mode
@@ -458,7 +469,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     for model_name, config in available_models:
                         print(f"Starting task for model: {config['model_name']} (display: {model_name})")
                         task = asyncio.create_task(
-                            run_model_with_timeout(config["model_name"], enhanced_question, websocket, display_name=model_name, response_length=response_length, timeout=120)
+                            run_model_with_timeout(config["model_name"], enhanced_question, websocket, display_name=model_name, response_length=response_length, session_id=session_id, timeout=120)
                         )
                         tasks.append(task)
                     
@@ -471,7 +482,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     completed_count = sum(1 for r in results if not isinstance(r, Exception) and not str(r).startswith("Error:"))
                     await websocket.send_text(json.dumps({
                         "status": "all_completed",
-                        "message": f"Parallel processing complete. {completed_count}/{len(available_models)} models responded successfully."
+                        "message": f"Parallel processing complete. {completed_count}/{len(available_models)} models responded successfully.",
+                        "sessionId": session_id
                     }))
                 
             except json.JSONDecodeError as e:
