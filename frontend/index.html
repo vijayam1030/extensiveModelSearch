@@ -255,6 +255,43 @@
             opacity: 0.6;
             cursor: not-allowed;
         }
+        
+        .processing-mode {
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .processing-mode label {
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .mode-select {
+            padding: 8px 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+        }
+        
+        .mode-select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .batch-status {
+            background: #e8f4f8;
+            border: 1px solid #b3d9e6;
+            border-radius: 8px;
+            padding: 10px;
+            margin: 10px 0;
+            color: #2c5aa0;
+            font-size: 14px;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -266,6 +303,16 @@
                 <span id="modelCount">Loading models...</span>
                 <button id="refreshBtn" class="refresh-btn">Refresh Models</button>
             </div>
+            
+            <div class="processing-mode">
+                <label for="processingMode">Processing Mode:</label>
+                <select id="processingMode" class="mode-select">
+                    <option value="batch">Batch (3 at a time)</option>
+                    <option value="parallel">All Parallel</option>
+                    <option value="sequential">Sequential (one by one)</option>
+                </select>
+            </div>
+            
             <textarea 
                 id="questionInput" 
                 class="question-input" 
@@ -308,6 +355,7 @@
                 this.submitBtn = document.getElementById('submitBtn');
                 this.refreshBtn = document.getElementById('refreshBtn');
                 this.modelCount = document.getElementById('modelCount');
+                this.processingMode = document.getElementById('processingMode');
                 this.loadingIndicator = document.getElementById('loadingIndicator');
                 this.resultsSection = document.getElementById('resultsSection');
                 this.modelsGrid = document.getElementById('modelsGrid');
@@ -477,7 +525,11 @@
             
             sendQuestion(question) {
                 if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-                    this.websocket.send(JSON.stringify({ question: question }));
+                    const mode = this.processingMode.value;
+                    this.websocket.send(JSON.stringify({ 
+                        question: question,
+                        mode: mode
+                    }));
                 }
             }
             
@@ -491,6 +543,13 @@
                 
                 if (data.status === 'starting') {
                     console.log(data.message);
+                    this.showBatchStatus(data.message);
+                    return;
+                }
+                
+                if (data.status === 'batch_update') {
+                    console.log(data.message);
+                    this.showBatchStatus(data.message);
                     return;
                 }
                 
@@ -598,6 +657,21 @@
             
             showError(message) {
                 alert(message);
+            }
+            
+            showBatchStatus(message) {
+                // Remove existing batch status
+                const existing = document.querySelector('.batch-status');
+                if (existing) {
+                    existing.remove();
+                }
+                
+                // Add new batch status
+                const statusDiv = document.createElement('div');
+                statusDiv.className = 'batch-status';
+                statusDiv.textContent = message;
+                
+                this.modelsGrid.parentNode.insertBefore(statusDiv, this.modelsGrid);
             }
             
             closeConnection() {

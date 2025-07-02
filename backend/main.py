@@ -238,6 +238,7 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 request_data = json.loads(data)
                 question = request_data.get("question", "").strip()
+                processing_mode = request_data.get("mode", "batch")  # batch, parallel, sequential
                 
                 if not question:
                     await websocket.send_text(json.dumps({
@@ -246,11 +247,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
                     continue
                 
-                print(f"Processing question: {question}")
+                print(f"Processing question: {question} (mode: {processing_mode})")
                 
-                # Limit to first 3 models to avoid overwhelming the system
-                available_models = list(model_config.models.items())[:3]
+                # Get all available models
+                all_models = list(model_config.models.items())
+                
+                if processing_mode == "parallel":
+                    # Run all models in parallel
+                    available_models = all_models
+                elif processing_mode == "sequential":
+                    # Run models one by one
+                    available_models = all_models
+                else:  # batch mode (default)
+                    # Run in batches of 3
+                    available_models = all_models
+                
                 print(f"Selected models: {[(name, config['model_name']) for name, config in available_models]}")
+                print(f"Total models to process: {len(available_models)}")
                 
                 if not available_models:
                     await websocket.send_text(json.dumps({
@@ -264,29 +277,88 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Send initial status
                 await websocket.send_text(json.dumps({
                     "status": "starting",
-                    "message": f"Starting processing with {len(available_models)} models"
+                    "message": f"Starting processing with {len(available_models)} models in {processing_mode} mode"
                 }))
                 
-                # Run models in parallel with individual timeouts
-                tasks = []
-                for model_name, config in available_models:
-                    print(f"Starting task for model: {config['model_name']} (display: {model_name})")
-                    task = asyncio.create_task(
-                        run_model_with_timeout(config["model_name"], question, websocket, display_name=model_name, timeout=120)
-                    )
-                    tasks.append(task)
+                if processing_mode == "sequential":
+                    # Process models one by one
+                    completed_count = 0
+                    for i, (model_name, config) in enumerate(available_models):
+                        await websocket.send_text(json.dumps({
+                            "status": "batch_update",
+                            "message": f"Processing model {i+1}/{len(available_models)}: {model_name}"
+                        }))
+                        
+                        result = await run_model_with_timeout(
+                            config["model_name"], question, websocket, 
+                            display_name=model_name, timeout=120
+                        )
+                        
+                        if not isinstance(result, Exception) and not str(result).startswith("Error:"):
+                            completed_count += 1
+                    
+                    await websocket.send_text(json.dumps({
+                        "status": "all_completed",
+                        "message": f"Sequential processing complete. {completed_count}/{len(available_models)} models responded successfully."
+                    }))
                 
-                # Wait for all tasks to complete or timeout
-                print("Waiting for all tasks to complete...")
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                print(f"All tasks completed. Results: {len(results)}")
+                elif processing_mode == "batch":
+                    # Process in batches of 3
+                    batch_size = 3
+                    total_completed = 0
+                    
+                    for batch_idx in range(0, len(available_models), batch_size):
+                        batch = available_models[batch_idx:batch_idx + batch_size]
+                        batch_num = (batch_idx // batch_size) + 1
+                        total_batches = (len(available_models) + batch_size - 1) // batch_size
+                        
+                        await websocket.send_text(json.dumps({
+                            "status": "batch_update",
+                            "message": f"Processing batch {batch_num}/{total_batches}: {', '.join([m[0] for m in batch])}"
+                        }))
+                        
+                        # Run this batch in parallel
+                        tasks = []
+                        for model_name, config in batch:
+                            print(f"Starting task for model: {config['model_name']} (display: {model_name})")
+                            task = asyncio.create_task(
+                                run_model_with_timeout(config["model_name"], question, websocket, display_name=model_name, timeout=120)
+                            )
+                            tasks.append(task)
+                        
+                        # Wait for this batch to complete
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                        batch_completed = sum(1 for r in results if not isinstance(r, Exception) and not str(r).startswith("Error:"))
+                        total_completed += batch_completed
+                        
+                        print(f"Batch {batch_num} completed: {batch_completed}/{len(batch)} models succeeded")
+                    
+                    await websocket.send_text(json.dumps({
+                        "status": "all_completed",
+                        "message": f"Batch processing complete. {total_completed}/{len(available_models)} models responded successfully."
+                    }))
                 
-                # Send completion message
-                completed_count = sum(1 for r in results if not isinstance(r, Exception) and not str(r).startswith("Error:"))
-                await websocket.send_text(json.dumps({
-                    "status": "all_completed",
-                    "message": f"Processing complete. {completed_count}/{len(available_models)} models responded successfully."
-                }))
+                else:  # parallel mode
+                    # Run all models in parallel
+                    tasks = []
+                    for model_name, config in available_models:
+                        print(f"Starting task for model: {config['model_name']} (display: {model_name})")
+                        task = asyncio.create_task(
+                            run_model_with_timeout(config["model_name"], question, websocket, display_name=model_name, timeout=120)
+                        )
+                        tasks.append(task)
+                    
+                    # Wait for all tasks to complete or timeout
+                    print("Waiting for all tasks to complete...")
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    print(f"All tasks completed. Results: {len(results)}")
+                    
+                    # Send completion message
+                    completed_count = sum(1 for r in results if not isinstance(r, Exception) and not str(r).startswith("Error:"))
+                    await websocket.send_text(json.dumps({
+                        "status": "all_completed",
+                        "message": f"Parallel processing complete. {completed_count}/{len(available_models)} models responded successfully."
+                    }))
                 
             except json.JSONDecodeError as e:
                 print(f"JSON decode error: {e}")
