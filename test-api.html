@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test API Connection</title>
+</head>
+<body>
+    <h1>API Connection Test</h1>
+    <button onclick="testAPI()">Test API</button>
+    <div id="result"></div>
+
+    <script>
+        async function testAPI() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Testing...';
+            
+            try {
+                const response = await fetch('http://localhost:8000/api/models');
+                const data = await response.json();
+                resultDiv.innerHTML = `
+                    <h2>Success!</h2>
+                    <p>Found ${data.models.length} models:</p>
+                    <ul>
+                        ${data.models.map(model => `<li>${model.name} (${model.full_name})</li>`).join('')}
+                    </ul>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `<h2>Error:</h2><p>${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>
